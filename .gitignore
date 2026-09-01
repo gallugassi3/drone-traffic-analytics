@@ -3,3 +3,7 @@ weights/
 videos/
 output/
 __pycache__/
+analysis/trajectories_*.csv
+analysis/crossing_crops/
+analysis/verify_run.log
+*.lock

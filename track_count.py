@@ -8,11 +8,20 @@ The counting logic is deliberately simple and inspectable: an object is
 counted when its box center crosses the counting line between consecutive
 frames of the same track id. The line can be horizontal (counts vertical
 flow, directions up/down) or vertical (counts horizontal flow, directions
-left/right) - real intersections taught us the dominant flow axis matters.
+left/right).
+
+Two lessons from the verification study (analysis/crossing_verification.md)
+are baked in:
+- A center landing exactly on the line for one frame used to make the
+  sign-change product zero and silently drop the crossing; last_pos is
+  therefore only updated off the line.
+- Split long vehicles (cab + trailer) cross as two tracks; dedup merges
+  them, but it is direction-aware and lane-tight (anisotropic radius),
+  so adjacent-lane and opposite-direction vehicles are never merged.
 
 Usage:
     python track_count.py videos/traffic.mp4
-    python track_count.py videos/traffic.mp4 --axis v --line 0.78 --show
+    python track_count.py videos/traffic.mp4 --axis v --line 0.5 --show
 """
 import argparse
 import csv
@@ -29,6 +38,14 @@ CONF = 0.25               # operating point validated in project 1 (near F1 peak
 TRACKER = "bytetrack.yaml"
 TRAIL_LEN = 30            # frames of trail history to draw per track
 OUT_DIR = Path("output")
+
+# Spatial dedup for split long vehicles (cab + trailer counted as one).
+# Anisotropic and direction-aware, per the verification study: tight across
+# lanes (lanes are ~60px, cars ~35px in this footage), wide along travel
+# (cab-to-trailer distance), and opposite directions are never merged.
+DEDUP_ACROSS = 25         # px perpendicular to travel direction (lane gating)
+DEDUP_ALONG = 120         # px along travel direction
+DEDUP_WINDOW = 15         # frames
 
 # VisDrone class names (model was trained on these ids)
 NAMES = ["pedestrian", "people", "bicycle", "car", "van", "truck",
@@ -66,9 +83,10 @@ def main() -> None:
                              fps_in, (w, h))
 
     trails = defaultdict(list)          # id -> recent centers
-    last_pos = {}                        # id -> previous center coord on the counting axis
+    last_pos = {}                        # id -> previous off-line center coord on the axis
     counted = set()                      # ids already counted (count each track once)
     counts = defaultdict(int)            # (class_name, direction) -> n
+    recent_crossings = []                # (frame_idx, along, across, direction)
     t0, frames = time.time(), 0
 
     # stream=True processes frame by frame; persist=True keeps track ids across frames
@@ -96,17 +114,34 @@ def main() -> None:
                     cv2.line(frame, p, q, color, 2)
 
                 # Crossing test: center moved from one side of the line to the
-                # other between consecutive frames (sign change of the offset)
+                # other (sign change). last_pos never stores an on-line value,
+                # so a frame exactly on the line cannot zero the product and
+                # hide the crossing.
                 coord = cy if args.axis == "h" else cx
                 if c in COUNT_CLASSES and tid in last_pos and tid not in counted:
                     if (last_pos[tid] - line_pos) * (coord - line_pos) < 0:
                         if args.axis == "h":
                             direction = "down" if coord > last_pos[tid] else "up"
+                            along, across = cy, cx
                         else:
                             direction = "right" if coord > last_pos[tid] else "left"
-                        counts[(NAMES[c], direction)] += 1
+                            along, across = cx, cy
+                        # Dedup: same direction, same lane band, close along
+                        # travel, within the time window = split vehicle
+                        dup = any(frames - f <= DEDUP_WINDOW and d == direction and
+                                  abs(across - pa) < DEDUP_ACROSS and
+                                  abs(along - pl) < DEDUP_ALONG
+                                  for f, pl, pa, d in recent_crossings)
+                        if not dup:
+                            counts[(NAMES[c], direction)] += 1
+                            recent_crossings.append((frames, along, across, direction))
+                            recent_crossings[:] = [
+                                (f, pl, pa, d) for f, pl, pa, d in recent_crossings
+                                if frames - f <= DEDUP_WINDOW
+                            ]
                         counted.add(tid)
-                last_pos[tid] = coord
+                if coord != line_pos:
+                    last_pos[tid] = coord
 
         # HUD: counting line + live totals
         if args.axis == "h":
