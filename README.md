@@ -1,8 +1,10 @@
 # Drone Traffic Analytics
 
-| Static highway - directional counting | Intersection - multi-class | Zoom-out - the stress case |
-|---|---|---|
-| ![Highway demo](assets/demo_highway.gif) | ![Intersection demo](assets/demo_intersection.gif) | ![Zoom-out demo](assets/demo_zoomout.gif) |
+![Directional counting on a static highway](assets/demo_highway.gif)
+
+| Intersection - multi-class | Zoom-out - the stress case |
+|---|---|
+| ![Intersection demo](assets/demo_intersection.gif) | ![Zoom-out demo](assets/demo_zoomout.gif) |
 
 *(Demos are downscaled GIFs; run the tool on any clip for full-resolution output.)*
 
