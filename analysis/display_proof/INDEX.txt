@@ -1,0 +1,8 @@
+Display-stability evidence pack - traffic3.mp4, top-5 flickering tracks (old policy: window-15 majority + 10-frame consecutive-disagreement; new policy: decayed-mass Schmitt + snap-on-count). Top row = old, bottom = new; caption = frame - displayed label.
+
+track #20: old 4 switches (van -> car), new 1 (van -> car) -> track_0020_before_after.jpg
+track #1851: old 4 switches (car -> van), new 1 (car -> van) -> track_1851_before_after.jpg
+track #150: old 3 switches (truck -> bus), new 0 (truck) -> track_0150_before_after.jpg
+track #701: old 3 switches (van -> car), new 1 (van -> car) -> track_0701_before_after.jpg
+track #796: old 3 switches (car -> truck -> bus), new 3 (car -> truck -> bus) -> track_0796_before_after.jpg
+  note: #796's new switches are purposeful, not flicker - one early-life correction, then a snap to the counted class at its crossing (f308: new shows 'bus' = the counted label; old showed 'truck' there), then reversion to the long-run evidence after the dwell.

@@ -163,3 +163,117 @@ Bottom line: pre-fix AFTER was off by -31 with inverted direction balance;
 the fixed counter is off by -2 (-2.8%) with the correct direction balance,
 and both residual misses are same-lane near-simultaneous vehicles - not an
 artifact of any of the three fixes.
+
+## 8. Class smoothing spot check (2026-09-01)
+
+track_count.py now smooths the displayed/counted class per track by majority
+vote over the last CLS_WINDOW = 15 observations (`majority_class()`, ties
+break toward the most recent). Sanity replay of the smoothed logic against
+`analysis/trajectories_traffic3.csv`:
+
+* **Totals confirmed exactly:** 70 crossings, 38 left / 32 right; table
+  bus R2, car L24/R14, motor R1, truck L8/R11, van L6/R4 - matching the
+  reported regression run cell for cell.
+* **No drift:** the set of counted track ids is *identical* to the pre-smoothing
+  replay (no crossing gained or lost, no dedup decision changed); only labels
+  moved.
+* **Five relabels, not three.** The three visible cell changes
+  (car L 22->24, van L 8->6, van R 3->4, car R 15->14) are produced by five
+  crossings whose crossing-frame raw class differs from the window majority -
+  two of them swap and cancel invisibly inside the truck R / bus R cells:
+
+| track | frame | dir | raw at crossing | smoothed | window vote | assessment |
+|---|---|---|---|---|---|---|
+| #15 | 5 | left | van | car | car 4 : van 1 | clear flicker correction |
+| #810 | 291 | right | car | van | van 8 : car 7 | **knife-edge**; the human review (c17) called it a car - a lookalike relabel, not flicker correction |
+| #1159 | 468 | right | bus | truck | truck 13 : bus 2 | clear correction, and now agrees with the human review (c24: long truck) |
+| #1691 | 771 | right | truck | bus | bus 14 : truck 1 | strong majority; crop (c33) is visually ambiguous top-down; cancels #1159 in the totals |
+| #2185 | 894 | left | van | car | car 10 : van 5 | clear majority correction |
+
+**Verdict: the smoothing introduces no count or membership drift** - totals,
+direction balance, and the counted-track set are unchanged - and four of the
+five relabels are strong-majority corrections of crossing-frame flicker (one,
+#1159, demonstrably moves toward the human ground truth). The one caveat is
+#810: an 8:7 vote flipped a label the human review disagrees with; with
+lookalike classes a one-vote margin is noise, so treat close car/van splits
+at the line as ambiguous rather than corrected.
+
+## 9. Display-layer stability: measurement, diagnosis, fix (2026-09-01)
+
+The third attempt at label stability (displayed class = window-15 majority
+behind a 10-consecutive-disagreement gate, CLS_STABLE=10) still flipped
+car/van and truck/bus labels mid-track. This section closes that loop with
+measurements from `scripts/verify_display.py` (exact per-track simulation of
+the display pipeline against `analysis/trajectories_traffic3.csv`).
+
+### 9.1 Measurement (policy in place before this fix)
+
+* **98 displayed-class switches across 60 of 339 tracks**; histogram
+  1/2/3/4 switches: 35/14/9/2 tracks; worst offenders #20 and #1851 with 4.
+* Switch timing: median at obs-age 50 (mid-track, exactly where a viewer is
+  watching the vehicle); only 22 of 98 in the early window-fill phase.
+* Class pairs: car/van 53, bus/truck 30 - the lookalike pairs, as observed.
+
+### 9.2 Diagnosis: the window majority itself oscillates slower than the gate
+
+Run-length encoding of the *window-majority* sequence on the top flickerers:
+
+* #1851 (raw votes car 77 : van 76): majority runs car x60, van x54 ...
+* #20 (61:51): van x13, car x31, van x21, car x21, van x23
+* #150 (51:42 truck/bus): truck x26, bus x15, truck x11, bus x21 ...
+* #701 (97:49): car x51, van x39, car x43
+
+The consecutive-disagreement gate is a **run-length filter** with threshold
+10; the majority's oscillation runs are **11-95 frames**. The gate passes
+them all. And no threshold works: genuine changes (e.g. #1619's motor phase
+feeding the verified motor count) live at ~10-20 frame runs, *inside* the
+flicker-run range that reaches 85+. Run length is the wrong discriminating
+axis. The right axis is **integrated vote share over a long horizon**: a
+flickering lookalike sits near 50/50 (77:76!) however long its runs are,
+while a genuine change drives the long-run share toward one class. (A first
+attempt with a *short*-horizon share filter - half-life 10 - made things
+worse, 122 switches, confirming the horizon must sit well above the
+oscillation period.)
+
+### 9.3 Fix (display layer only; counting untouched)
+
+Displayed class = **Schmitt trigger on exponentially-decayed per-class vote
+mass** (half-life DISP_HALF_LIFE = 40 frames): switch to the top class only
+when its mass is at least DISP_MARGIN = 2x the incumbent's *and* above an
+absolute floor (DISP_MIN_MASS = 8, kills early-life jitter), then hold for a
+short dwell (DISP_DWELL = 25). A ~50/50 oscillation can never build a 2:1
+mass ratio at this horizon; a genuine sustained change decays the incumbent
+toward zero and switches in ~1-2 half-lives. **At the crossing moment the
+display snaps to the counted class** - the one label verified against ground
+truth - so the video always shows the label being counted (the crossing test
+is evaluated before drawing for this reason; its logic is character-for-
+character unchanged).
+
+### 9.4 Verification
+
+* **Counted table bit-identical** (replayed on the CSV): bus R2, car L24/R14,
+  motor R1, truck L8/R11, van L6/R4 = 70. The display layer cannot reach it.
+* Switches: **98 -> 62**; tracks with repeated flipping (2+ switches):
+  **25 -> 9**; worst track: 4 -> 3; car/van switches 53 -> 30, bus/truck
+  30 -> 19.
+* Every remaining multi-switch track follows the intended pattern - at most
+  one early-life correction (mass floor reached ~age 8-13), one snap at the
+  crossing, one post-dwell reversion to the long-run evidence. Zero
+  oscillation. All ten previous top flickerers (#20, #1851, #150, #701,
+  #1159, #1429, #1715, #1974, #1983 et al.) now hold one label for life
+  (<= 1 switch).
+* **#1619 requirement met, meaningfully:** the old policy displayed *car* at
+  its crossing while counting motor; the new policy displays **motor at the
+  crossing frame (f723)** and through the dwell, then returns to car when the
+  long-run evidence (raw tail of 27 consecutive car votes) sustains it -
+  which is exactly the "genuine sustained change must still switch"
+  requirement. Locking motor to end-of-track would be accumulate-forever
+  lock-in in the other direction; the meaningful guarantee is that the label
+  being counted is the label on screen at the count.
+* Real end-to-end run: `python track_count.py videos/traffic3.mp4 --axis v
+  --line 0.5` regenerated `output/traffic3_tracked.mp4` (921 frames, 76.7 s,
+  12.0 FPS end-to-end) and printed the **identical counted table** - bus R2,
+  car L24/R14, motor R1, truck L8/R11, van L6/R4 = 70.
+
+Tooling: `scripts/verify_display.py` (simulates both policies, prints the
+before/after statistics above, and asserts the counted table).

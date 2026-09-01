@@ -10,14 +10,32 @@ frames of the same track id. The line can be horizontal (counts vertical
 flow, directions up/down) or vertical (counts horizontal flow, directions
 left/right).
 
-Two lessons from the verification study (analysis/crossing_verification.md)
-are baked in:
-- A center landing exactly on the line for one frame used to make the
-  sign-change product zero and silently drop the crossing; last_pos is
+Class handling is two-layered, because measurement and presentation have
+different needs (verified in analysis/fix_verification.md, section 9):
+- COUNTED class = majority vote over the last CLS_WINDOW frames at
+  crossing time. Local evidence wins: the most discriminative views are
+  near the line, and the window majority was verified against human
+  ground truth (it labels the crossing motorcycle and the 14:1 bus
+  correctly, where accumulate-forever hysteresis locked onto early
+  frame-edge misreads).
+- DISPLAYED class (box color/label) = display-only Schmitt trigger on
+  long-horizon decayed vote mass: the label switches only when a
+  challenger's decayed mass clearly outweighs the incumbent's
+  (DISP_MARGIN, DISP_MIN_MASS), with a short post-switch dwell - a
+  share-level criterion, because the window majority itself oscillates
+  in runs of 11-95 frames on ~50/50 lookalikes (car/van, truck/bus), so
+  no run-length gate can separate that flicker from a genuine change.
+  At the crossing moment the display snaps to the counted class, so the
+  video always shows the label being counted. Nothing is locked
+  forever: a genuinely sustained majority change still switches.
+
+Other verified behaviors baked in:
+- A center landing exactly on the line for one frame used to zero the
+  sign-change product and silently drop the crossing; last_pos is
   therefore only updated off the line.
 - Split long vehicles (cab + trailer) cross as two tracks; dedup merges
-  them, but it is direction-aware and lane-tight (anisotropic radius),
-  so adjacent-lane and opposite-direction vehicles are never merged.
+  them, direction-aware and lane-tight (anisotropic radius), so
+  adjacent-lane and opposite-direction vehicles are never merged.
 
 Dedup gate constants (DEDUP_ACROSS / DEDUP_ALONG / DEDUP_WINDOW) are
 calibrated for 1280x720 @ 30fps footage; rescale them for other
@@ -51,6 +69,15 @@ DEDUP_ACROSS = 25         # px perpendicular to travel direction (lane gating)
 DEDUP_ALONG = 120         # px along travel direction
 DEDUP_WINDOW = 15         # frames
 
+# Two-layer class handling (see module docstring):
+CLS_WINDOW = 15           # frames in the majority-vote window (counted class)
+# Display-only stability (verified in analysis/fix_verification.md section 9):
+DISP_HALF_LIFE = 40.0     # frames: horizon of the decayed per-class vote mass
+DISP_MARGIN = 2.0         # challenger needs 2x the incumbent's decayed mass
+DISP_MIN_MASS = 8.0       # ... and at least this much absolute mass
+DISP_DWELL = 25           # frames: no further display switch right after one
+DISP_DECAY = 0.5 ** (1.0 / DISP_HALF_LIFE)
+
 # VisDrone class names (model was trained on these ids)
 NAMES = ["pedestrian", "people", "bicycle", "car", "van", "truck",
          "tricycle", "awning-tricycle", "bus", "motor"]
@@ -60,6 +87,19 @@ COUNT_CLASSES = {0, 3, 4, 5, 8, 9}  # pedestrian, car, van, truck, bus, motor
 COLORS = [(66, 135, 245), (52, 195, 235), (99, 220, 120), (60, 76, 231),
           (180, 130, 70), (30, 105, 210), (190, 100, 220), (128, 128, 128),
           (0, 165, 255), (203, 70, 250)]
+
+
+def window_majority(history: list[int]) -> int:
+    """Most frequent class in the window; ties break toward the most recent."""
+    counts: dict[int, int] = {}
+    for cls in history:
+        counts[cls] = counts.get(cls, 0) + 1
+    best_cls, best_key = history[-1], (-1, -1)
+    for recency, cls in enumerate(reversed(history)):
+        key = (counts[cls], -recency)   # higher count wins; then more recent
+        if key > best_key:
+            best_cls, best_key = cls, key
+    return best_cls
 
 
 def main() -> None:
@@ -87,6 +127,10 @@ def main() -> None:
                              fps_in, (w, h))
 
     trails = defaultdict(list)          # id -> recent centers
+    cls_hist = defaultdict(list)         # id -> recent raw class votes (window)
+    cls_mass = defaultdict(lambda: defaultdict(float))  # id -> decayed vote mass per class
+    shown_cls = {}                       # id -> class currently displayed
+    disp_dwell = defaultdict(int)        # id -> frames left before display may switch again
     last_pos = {}                        # id -> previous off-line center coord on the axis
     counted = set()                      # ids already counted (count each track once)
     counts = defaultdict(int)            # (class_name, direction) -> n
@@ -106,23 +150,20 @@ def main() -> None:
             for box, tid, c in zip(result.boxes.xyxy, ids, clss):
                 x1, y1, x2, y2 = map(int, box)
                 cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                color = COLORS[c % len(COLORS)]
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{NAMES[c]} #{tid}", (x1, max(y1 - 5, 12)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
-
-                trails[tid].append((cx, cy))
-                trails[tid] = trails[tid][-TRAIL_LEN:]
-                for p, q in zip(trails[tid], trails[tid][1:]):
-                    cv2.line(frame, p, q, color, 2)
+                # Layer 1 - measurement: window majority (the counted class)
+                cls_hist[tid].append(c)
+                cls_hist[tid] = cls_hist[tid][-CLS_WINDOW:]
+                c_count = window_majority(cls_hist[tid])
 
                 # Crossing test: center moved from one side of the line to the
                 # other (sign change). last_pos never stores an on-line value,
                 # so a frame exactly on the line cannot zero the product and
-                # hide the crossing.
+                # hide the crossing. (Evaluated before drawing so the display
+                # can snap to the counted class on the crossing frame itself.)
                 coord = cy if args.axis == "h" else cx
-                if c in COUNT_CLASSES and tid in last_pos and tid not in counted:
+                crossed_now = False
+                if c_count in COUNT_CLASSES and tid in last_pos and tid not in counted:
                     if (last_pos[tid] - line_pos) * (coord - line_pos) < 0:
                         if args.axis == "h":
                             direction = "down" if coord > last_pos[tid] else "up"
@@ -137,15 +178,49 @@ def main() -> None:
                                   abs(along - pl) < DEDUP_ALONG
                                   for f, pl, pa, d in recent_crossings)
                         if not dup:
-                            counts[(NAMES[c], direction)] += 1
+                            counts[(NAMES[c_count], direction)] += 1
                             recent_crossings.append((frames, along, across, direction))
                             recent_crossings[:] = [
                                 (f, pl, pa, d) for f, pl, pa, d in recent_crossings
                                 if frames - f <= DEDUP_WINDOW
                             ]
                         counted.add(tid)
+                        crossed_now = True
                 if coord != line_pos:
                     last_pos[tid] = coord
+
+                # Layer 2 - presentation: Schmitt trigger on decayed vote
+                # mass, with snap-to-counted-class at the crossing moment
+                # (see module docstring; verified in fix_verification.md s9)
+                mass = cls_mass[tid]
+                for k in mass:
+                    mass[k] *= DISP_DECAY
+                mass[c] += 1.0
+                if tid not in shown_cls:
+                    shown_cls[tid] = c_count
+                elif crossed_now:
+                    if shown_cls[tid] != c_count:
+                        shown_cls[tid] = c_count
+                        disp_dwell[tid] = DISP_DWELL
+                elif disp_dwell[tid] > 0:
+                    disp_dwell[tid] -= 1
+                else:
+                    top = max(mass, key=lambda k: mass[k])
+                    if (top != shown_cls[tid] and mass[top] >= DISP_MIN_MASS and
+                            mass[top] >= DISP_MARGIN * mass.get(shown_cls[tid], 0.0)):
+                        shown_cls[tid] = top
+                        disp_dwell[tid] = DISP_DWELL
+                c_disp = shown_cls[tid]
+                color = COLORS[c_disp % len(COLORS)]
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"{NAMES[c_disp]} #{tid}", (x1, max(y1 - 5, 12)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+
+                trails[tid].append((cx, cy))
+                trails[tid] = trails[tid][-TRAIL_LEN:]
+                for p, q in zip(trails[tid], trails[tid][1:]):
+                    cv2.line(frame, p, q, color, 2)
 
         # HUD: counting line + live totals
         if args.axis == "h":
