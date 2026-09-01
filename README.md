@@ -1,5 +1,14 @@
 # Drone Traffic Analytics
 
+**TL;DR:** A traffic-counting system for drone footage. It takes a raw
+aerial clip, detects every road user with the YOLO11 detector I trained in
+my [previous project](https://github.com/gallugassi3/visdrone-small-object-detection),
+tracks each one with a persistent id, and counts line crossings per class
+and per direction. The counts were validated against a human-reviewed
+ground truth (70 of 72 crossings, correct direction balance), and the
+tracker behind the pipeline was chosen through a measured five-way
+comparison study - not by default.
+
 ![Directional counting on a static highway](assets/demo_highway.gif)
 
 | Intersection - multi-class | Zoom-out - the stress case |
