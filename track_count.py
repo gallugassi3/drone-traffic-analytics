@@ -19,6 +19,10 @@ are baked in:
   them, but it is direction-aware and lane-tight (anisotropic radius),
   so adjacent-lane and opposite-direction vehicles are never merged.
 
+Dedup gate constants (DEDUP_ACROSS / DEDUP_ALONG / DEDUP_WINDOW) are
+calibrated for 1280x720 @ 30fps footage; rescale them for other
+resolutions or frame rates.
+
 Usage:
     python track_count.py videos/traffic.mp4
     python track_count.py videos/traffic.mp4 --axis v --line 0.5 --show
