@@ -110,6 +110,9 @@ def main() -> None:
     ap.add_argument("--axis", choices=["h", "v"], default="h",
                     help="h: horizontal line counts vertical flow (up/down); "
                          "v: vertical line counts horizontal flow (left/right)")
+    ap.add_argument("--tracker", default=TRACKER,
+                    help="tracker yaml: a bundled name (bytetrack.yaml, "
+                         "botsort.yaml, ...) or a path to a custom config")
     ap.add_argument("--show", action="store_true", help="display live window")
     args = ap.parse_args()
 
@@ -139,7 +142,7 @@ def main() -> None:
 
     # stream=True processes frame by frame; persist=True keeps track ids across frames
     for result in model.track(source=args.video, imgsz=IMGSZ, conf=CONF,
-                              tracker=TRACKER, persist=True, stream=True,
+                              tracker=args.tracker, persist=True, stream=True,
                               verbose=False):
         frame = result.orig_img
         frames += 1

@@ -6,4 +6,6 @@ __pycache__/
 analysis/trajectories_*.csv
 analysis/crossing_crops/
 analysis/verify_run.log
+analysis/ai_tell_sweep.txt
+analysis/tracker_runs/
 *.lock
