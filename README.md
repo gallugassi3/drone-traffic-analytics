@@ -7,8 +7,8 @@ Directional traffic counting from drone footage: **YOLO11n trained on VisDrone**
 released weights) + **ByteTrack** multi-object tracking + an inspectable
 line-crossing counter with per-class, per-direction totals.
 
-*Demo clip by [Kelly](https://www.pexels.com/@kelly/) on Pexels; intersection clip
-by Siarhei Dalivelia.*
+*Highway and intersection demo clips from [Pexels](https://www.pexels.com)
+(intersection footage by Siarhei Dalivelia).*
 
 ## What it does
 
@@ -30,14 +30,16 @@ independent verification study (re-running the tracker, logging all 14K
 trajectories, clustering crossings, and human-reviewing crop images of every
 multi-track event) found two cancelling bugs:
 
-| Version | Total counted | Ground truth: 71 |
+| Version | Total counted | vs ground truth (72 crossings, 39 left / 33 right) |
 |---|---|---|
 | Naive counter | 70 | +16 duplicate crossings from split trucks and id switches, −17 crossings silently dropped by an exact-on-the-line zero-product edge case |
 | First dedup (80px radius) | 41 | merged real vehicles in adjacent lanes and even opposite directions - **over-correction, measured** |
-| Final (direction-aware, lane-tight anisotropic dedup + edge-case fix) | **70** | **38 left / 32 right vs ground truth 39 / 32** |
+| Final (direction-aware, lane-tight anisotropic dedup + edge-case fix) | **70** | **38 left / 32 right - 97% of ground truth with correct direction balance; the two residual misses are localized and analyzed in the fix report** |
 
 Full study: [`analysis/crossing_verification.md`](analysis/crossing_verification.md) ·
-verification tooling: [`scripts/verify_crossings.py`](scripts/verify_crossings.py)
+fix verification (replayed against logged trajectories):
+[`analysis/fix_verification.md`](analysis/fix_verification.md) ·
+tooling: [`scripts/verify_crossings.py`](scripts/verify_crossings.py)
 
 ## Design choices
 
@@ -52,7 +54,9 @@ verification tooling: [`scripts/verify_crossings.py`](scripts/verify_crossings.p
 
 - **Split long vehicles:** the detector occasionally splits a truck into
   cab + trailer; the dedup merges those crossings (verified against human ground
-  truth on all 24 multi-track events).
+  truth on all multi-track events). Its one blind spot is geometric: a genuine
+  nose-to-tail convoy in the same lane is indistinguishable from a cab/trailer
+  split at the line - one such miss in this footage, documented in the fix report.
 - **Camera motion breaks tracking:** on a zoom-out clip, detection stayed solid
   but track identity churned (16K+ ids in 23s). No motion compensation - documented
   as the next step, not hidden.
